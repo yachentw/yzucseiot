@@ -29,20 +29,24 @@ import argparse
 import sys
 
 # Set up camera constants
-IM_WIDTH = 1280
-IM_HEIGHT = 720
-#IM_WIDTH = 640    Use smaller resolution for
-#IM_HEIGHT = 480   slightly faster framerate
+# IM_WIDTH = 1280
+# IM_HEIGHT = 720
+IM_WIDTH = 640    # Use smaller resolution for
+IM_HEIGHT = 480   # slightly faster framerate
 
 # Select camera type (if user enters --usbcam when calling this script,
 # a USB webcam will be used)
-camera_type = 'picamera'
+camera_type = 'usb'
 parser = argparse.ArgumentParser()
 parser.add_argument('--usbcam', help='Use a USB webcam instead of picamera',
+                    action='store_true')
+parser.add_argument('--picam', help='Use a picamera',
                     action='store_true')
 args = parser.parse_args()
 if args.usbcam:
     camera_type = 'usb'
+if args.picam:
+    camera_type = 'picamera'
 
 # This is needed since the working directory is the object_detection folder.
 sys.path.append('..')
@@ -191,7 +195,7 @@ elif camera_type == 'usb':
         # Perform the actual detection by running the model with the image as input
         (boxes, scores, classes, num) = sess.run(
             [detection_boxes, detection_scores, detection_classes, num_detections],
-            feed_dict={image_tensor: frame_expanded})
+            feed_dict={image_tensor: frame_expanded})        
 
         # Draw the results of the detection (aka 'visulaize the results')
         vis_util.visualize_boxes_and_labels_on_image_array(
@@ -202,7 +206,11 @@ elif camera_type == 'usb':
             category_index,
             use_normalized_coordinates=True,
             line_thickness=8,
-            min_score_thresh=0.85)
+            min_score_thresh=0.4)
+        # print(boxes[0][:10])
+        # print(np.squeeze(classes))
+        # print(np.squeeze(scores))
+        # print(category_index)
 
         cv2.putText(frame,"FPS: {0:.2f}".format(frame_rate_calc),(30,50),font,1,(255,255,0),2,cv2.LINE_AA)
         
