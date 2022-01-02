@@ -51,7 +51,7 @@ def resize(event=None):
 
     # Resize font based on frame height (minimum size of 12)
     # Use negative number for "pixels" instead of "points"
-    new_size = -max(12, int((frame.winfo_height() / 2)))
+    new_size = -max(12, int((frame.winfo_height() / 4)))
     time_dfont.configure(size=new_size)
     new_size = -max(12, int((frame.winfo_height() / 30)))
     button_dfont.configure(size=new_size)
