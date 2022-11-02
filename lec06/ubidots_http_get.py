@@ -8,8 +8,8 @@ Made by Jose García @https://github.com/jotathebest/
 '''
 
 import requests
-import random
 import time
+import sys
 
 '''
 global variables
@@ -48,6 +48,9 @@ def get_var(url=ENDPOINT, device=DEVICE_LABEL, variable=VARIABLE_LABEL,
 
 
 if __name__ == "__main__":
+    if TOKEN == "...":
+        print("Error: replace the TOKEN string with your API Credentials.")
+        sys.exit()
     while True:
         get_var()
         time.sleep(DELAY)
