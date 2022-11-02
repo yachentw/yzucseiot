@@ -15,7 +15,7 @@ import time
 global variables
 '''
 
-ENDPOINT = "things.ubidots.com"
+ENDPOINT = "industrial.api.ubidots.com"
 DEVICE_LABEL = "weather-station"
 VARIABLE_LABEL = "temperature"
 TOKEN = "..." # replace with your TOKEN

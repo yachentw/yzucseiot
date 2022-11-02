@@ -9,11 +9,11 @@ LED_PIN = 12
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup(LED_PIN, GPIO.OUT)
 
-ENDPOINT = "things.ubidots.com"
+ENDPOINT = "industrial.api.ubidots.com"
 DEVICE_LABEL = "weather-station"
 VARIABLE_LABEL = "led"
 TOKEN = "..." # replace with your TOKEN
-DELAY = 0.2  # Delay in seconds
+DELAY = 0.1  # Delay in seconds
 URL = "http://{}/api/v1.6/devices/{}/{}/lv".format(ENDPOINT, DEVICE_LABEL, VARIABLE_LABEL)
 HEADERS = {"X-Auth-Token": TOKEN, "Content-Type": "application/json"}
 
