@@ -8,14 +8,14 @@ Made by Jose García @https://github.com/jotathebest/
 '''
 
 import requests
-import random
 import time
+import sys
 
 '''
 global variables
 '''
 
-ENDPOINT = "things.ubidots.com"
+ENDPOINT = "industrial.api.ubidots.com"
 DEVICE_LABEL = "weather-station"
 VARIABLE_LABEL = "temperature"
 TOKEN = "..." # replace with your TOKEN
@@ -25,7 +25,7 @@ DELAY = 1  # Delay in seconds
 def get_var(url=ENDPOINT, device=DEVICE_LABEL, variable=VARIABLE_LABEL,
             token=TOKEN):
     try:
-        url = "http://{}/api/v1.6/devices/{}/{}/?page_size=2".format(url,
+        url = "http://{}/api/v1.6/devices/{}/{}/values/?page_size=2".format(url,
                                                         device,
                                                         variable)
 
@@ -48,6 +48,9 @@ def get_var(url=ENDPOINT, device=DEVICE_LABEL, variable=VARIABLE_LABEL,
 
 
 if __name__ == "__main__":
+    if TOKEN == "...":
+        print("Error: replace the TOKEN string with your API Credentials.")
+        sys.exit()
     while True:
         get_var()
         time.sleep(DELAY)
