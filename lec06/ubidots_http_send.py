@@ -10,12 +10,13 @@ Made by Jose García @https://github.com/jotathebest/
 import requests
 import random
 import time
+import sys
 
 '''
 global variables
 '''
 
-ENDPOINT = "things.ubidots.com"
+ENDPOINT = "industrial.api.ubidots.com"
 DEVICE_LABEL = "weather-station"
 VARIABLE_LABEL = "temperature"
 TOKEN = "..." # replace with your TOKEN
@@ -55,6 +56,9 @@ def main():
 
 
 if __name__ == "__main__":
+    if TOKEN == "...":
+        print("Error: replace the TOKEN string with your API Credentials.")
+        sys.exit()
     while True:
         main()
         time.sleep(DELAY)
