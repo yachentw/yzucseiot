@@ -208,8 +208,8 @@ elif camera_type == 'usb':
             np.squeeze(scores),
             category_index,
             use_normalized_coordinates=True,
-            line_thickness=8,
-            min_score_thresh=0.4)
+            line_thickness=3,
+            min_score_thresh=0.01)
         #print(np.squeeze(boxes)[:5])
         # print(np.squeeze(classes))
         # print(np.squeeze(scores))
