@@ -37,7 +37,7 @@ pwm_l2 = GPIO.PWM(Motor_L2_Pin, 500)
 pwm_r1.start(0)
 pwm_r2.start(0)
 pwm_l1.start(0)
-pwm_l1.start(0)
+pwm_l2.start(0)
 
 
 def stop():
