@@ -1,6 +1,7 @@
 import speech_recognition as sr
 import requests
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from gtts import gTTS
 import os
@@ -17,7 +18,8 @@ options.add_experimental_option('prefs',prefs)
 options.add_argument("--headless")            #不開啟實體瀏覽器背景執行
 options.add_argument("--incognito")           #開啟無痕模式
 
-driver = webdriver.Chrome(options=options)
+browser_driver = Service('/usr/lib/chromium-browser/chromedriver')
+driver = webdriver.Chrome(service=browser_driver, options=options)
 
 #obtain audio from the microphone
 r=sr.Recognizer() 
@@ -37,7 +39,8 @@ try:
     print(text)
     if "天氣" in text:
         driver.get("https://www.google.com/search?q=中壢+天氣")
-        Temp = driver.find_element_by_id('wob_tm').text
+        Temp = driver.find_element("id", 'wob_tm').text
+#        Temp = driver.find_element_by_id('wob_tm').text
         tts = gTTS(text='現在中壢天氣' + Temp + '度', lang='zh-TW')
         tts.save('w.mp3')
         os.system('omxplayer -o local -p w.mp3 > /dev/null 2>&1')
