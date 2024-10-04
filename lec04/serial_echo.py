@@ -1,7 +1,7 @@
 import time
 import serial
 
-ser = serial.Serial('/dev/ttyAMA1', baudrate=9600,
+ser = serial.Serial('/dev/ttyAMA5', baudrate=9600,
                     parity=serial.PARITY_NONE,
                     stopbits=serial.STOPBITS_ONE,
                     bytesize=serial.EIGHTBITS
@@ -9,7 +9,7 @@ ser = serial.Serial('/dev/ttyAMA1', baudrate=9600,
 try:
     ser.write(b'Hello World\r\n')
     ser.write(b'Serial Communication Using Raspberry Pi\r\n')
-    while True:    
+    while True:
         data = ser.readline()
         print(data.decode("utf-8").strip())
         ser.write(data)

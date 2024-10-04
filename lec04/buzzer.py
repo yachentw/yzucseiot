@@ -21,8 +21,10 @@ try:
         pwm.ChangeDutyCycle(0)
         time.sleep(5)
 except KeyboardInterrupt:
-    pass
-pwm.stop()
-GPIO.cleanup()
+    print("\nKeyboardInterrupt")
+finally:
+    pwm.stop()
+    # for rpi-lgpio
+    # GPIO.cleanup()
 
 
