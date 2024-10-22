@@ -16,7 +16,6 @@ def get_virtual_pin_value():
             if response.status_code == 200:
                 value = response.text.strip()
                 print(f"Virtual PIN {VIRTUAL_PIN}: {value}")
-                return value
             else:
                 print(f"Cannot access: {response.status_code}")
         except Exception as e:
