@@ -1,12 +1,27 @@
 import time
 import requests
+import RPi.GPIO as GPIO
+import sys
+
+LED_PIN = 12
+GPIO.setmode(GPIO.BOARD)
+GPIO.setup(LED_PIN, GPIO.OUT)
 
 # Replace with your token
 BLYNK_AUTH_TOKEN = '...'
-VIRTUAL_PIN = 'V0'
+VIRTUAL_PIN = 'V1'
 
 # Blynk API URL
 BLYNK_GET_URL = f'https://blynk.cloud/external/api/get?token={BLYNK_AUTH_TOKEN}&{VIRTUAL_PIN}'
+
+def led(cmd):
+    if cmd == 1:
+        print("led on.")
+        GPIO.output(LED_PIN, GPIO.HIGH)
+    elif cmd == 0:
+        print("led off.")
+        GPIO.output(LED_PIN, GPIO.LOW)
+
 
 def get_virtual_pin_value():
     """Get the lastest value of a virtual pin"""
@@ -24,7 +39,9 @@ def get_virtual_pin_value():
 if __name__ == '__main__':
     if BLYNK_AUTH_TOKEN == "...":
         print("Replace the token.")
-    else:
-        while True:
-            get_virtual_pin_value()
-            time.sleep(10)
+        GPIO.cleanup()
+        sys.exit()
+    while True:
+        cmd = get_virtual_pin_value()
+        led(int(cmd))
+        time.sleep(1)
