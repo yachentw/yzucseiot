@@ -1,6 +1,6 @@
 import cv2
 
-img = cv2.imread("lena.jpg")
+img = cv2.imread("cat.jpg")
 rows, cols = img.shape[:2]
 M = cv2.getRotationMatrix2D((cols/2, rows/2), 45, 1)
 rotation = cv2.warpAffine(img, M, (cols, rows))

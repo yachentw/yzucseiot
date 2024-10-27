@@ -1,6 +1,6 @@
 import cv2
 
-img = cv2.imread("lena.jpg")
+img = cv2.imread("cat.jpg")
 cv2.imshow("Normal", img)
 cv2.waitKey(0)
 face = img[90:240, 125:225]
