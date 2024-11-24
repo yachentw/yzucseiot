@@ -1,7 +1,5 @@
 import io
-import cv2
 import threading
-import os
 import time
 import numpy as np
 import matplotlib
@@ -162,6 +160,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nExiting program.")
         stop_event.set()
-        # sensor_thread.join()  # 等待執行緒結束
+        # sensor_thread.join()
         plt.ioff()
         plt.show()
