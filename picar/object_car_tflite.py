@@ -25,10 +25,9 @@ import importlib.util
 import pwm_motor as motor
 
 class MotorThread(Thread):
-    def __init__(self, action, duration=0.1):
+    def __init__(self, action):
         super().__init__()
         self.action = action
-        self.duration = duration
 
     def run(self):
         if self.action == "turnLeft":
@@ -39,8 +38,6 @@ class MotorThread(Thread):
             motor.forward()
         elif self.action == "backward":
             motor.backward()
-        time.sleep(self.duration)
-        motor.stop()
 
 
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
