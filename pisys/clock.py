@@ -140,5 +140,5 @@ root.bind('<Configure>', resize)
 root.after(20, update)
 
 # Start in fullscreen mode and run
-toggle_fullscreen()
+root.after(3000, toggle_fullscreen)
 root.mainloop()
