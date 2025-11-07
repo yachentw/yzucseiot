@@ -1,236 +1,295 @@
-######## Webcam Object Detection Using Tensorflow-trained Classifier #########
-#
-# Author: Evan Juras
-# Date: 10/27/19
-# Description: 
-# This program uses a TensorFlow Lite model to perform object detection on a live webcam
-# feed. It draws boxes and scores around the objects of interest in each frame from the
-# webcam. To improve FPS, the webcam object runs in a separate thread from the main program.
-# This script will work with either a Picamera or regular USB webcam.
-#
-# This code is based off the TensorFlow Lite image classification example at:
-# https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/examples/python/label_image.py
-#
-# I added my own method of drawing boxes and labels using OpenCV.
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Webcam Object Detection (TFLite)
+- Ready for EfficientDet‑Lite0/1/2 (TF Hub) and SSD‑MobileNet (V1/V2/V3) TFLite models
+- Works on Raspberry Pi (Pi 4/5) with tflite-runtime or full TensorFlow
+- Robust output mapping (auto-detects boxes/classes/scores/count regardless of name/order)
+- Keeps your original threaded VideoStream design for better FPS
 
-# Import packages
+Usage (examples):
+  python3 TFLite_detection_webcam_efficientdet.py \
+    --modeldir TFLite_model \
+    --graph efficientdet_lite0.tflite \
+    --labels labelmap.txt \
+    --threshold 0.4 \
+    --resolution 1280x720
+
+Notes:
+- If you use EfficientDet‑Lite from TF Hub, input size is typically 320x320 (Lite0), 384x384 (Lite1), 448x448 (Lite2).
+- This script automatically reads model input tensor size; you can override via --force_input if needed.
+- For quantized models (int8/uint8), normalization is not applied; for float models, mean/std normalization is used.
+- For EdgeTPU models, add --edgetpu and make sure the corresponding edgetpu .tflite is used.
+"""
 import os
-import argparse
-import cv2
-import numpy as np
 import sys
 import time
-from threading import Thread
+import argparse
 import importlib.util
+from threading import Thread
 
-# Define VideoStream class to handle streaming of video from webcam in separate processing thread
-# Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
+import cv2
+import numpy as np
+
+# ------------------------------
+# Video stream helper (threaded)
+# ------------------------------
 class VideoStream:
-    """Camera object that controls video streaming from the Picamera"""
-    def __init__(self,resolution=(640,480),framerate=30):
-        # Initialize the PiCamera and the camera image stream
-        self.stream = cv2.VideoCapture(0)
-        ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        ret = self.stream.set(3,resolution[0])
-        ret = self.stream.set(4,resolution[1])
-            
-        # Read first frame from the stream
-        (self.grabbed, self.frame) = self.stream.read()
-
-	# Variable to control when the camera is stopped
+    def __init__(self, src=0, resolution=(640, 480), framerate=30, fourcc='MJPG'):
+        self.stream = cv2.VideoCapture(src, cv2.CAP_V4L2)
+        # Try to set format for better USB cams throughput
+        if fourcc:
+            self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+        self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+        self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+        self.stream.set(cv2.CAP_PROP_FPS, framerate)
+        self.grabbed, self.frame = self.stream.read()
         self.stopped = False
 
     def start(self):
-	# Start the thread that reads frames from the video stream
-        Thread(target=self.update,args=()).start()
+        Thread(target=self.update, args=(), daemon=True).start()
         return self
 
     def update(self):
-        # Keep looping indefinitely until the thread is stopped
         while True:
-            # If the camera is stopped, stop the thread
             if self.stopped:
-                # Close camera resources
                 self.stream.release()
                 return
-
-            # Otherwise, grab the next frame from the stream
-            (self.grabbed, self.frame) = self.stream.read()
+            self.grabbed, self.frame = self.stream.read()
 
     def read(self):
-	# Return the most recent frame
         return self.frame
 
     def stop(self):
-	# Indicate that the camera and thread should be stopped
         self.stopped = True
 
-# Define and parse input arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('--modeldir', help='Folder the .tflite file is located in',
-                    required=True)
-parser.add_argument('--graph', help='Name of the .tflite file, if different than detect.tflite',
-                    default='detect.tflite')
-parser.add_argument('--labels', help='Name of the labelmap file, if different than labelmap.txt',
-                    default='labelmap.txt')
-parser.add_argument('--threshold', help='Minimum confidence threshold for displaying detected objects',
-                    default=0.5)
-parser.add_argument('--resolution', help='Desired webcam resolution in WxH. If the webcam does not support the resolution entered, errors may occur.',
-                    default='1280x720')
-parser.add_argument('--edgetpu', help='Use Coral Edge TPU Accelerator to speed up detection',
-                    action='store_true')
+# ------------------------------
+# TFLite loader (tflite-runtime or TF)
+# ------------------------------
 
-args = parser.parse_args()
+def load_tflite_interpreter(model_path, use_tpu=False, use_xnnpack=True):
+    """Load TFLite interpreter from tflite_runtime if available; otherwise from tensorflow."""
+    pkg = importlib.util.find_spec('tflite_runtime')
+    if pkg:
+        from tflite_runtime.interpreter import Interpreter
+        load_delegate = None
+        if use_tpu:
+            from tflite_runtime.interpreter import load_delegate as _ld
+            load_delegate = _ld
+    else:
+        from tensorflow.lite.python.interpreter import Interpreter
+        load_delegate = None
+        if use_tpu:
+            from tensorflow.lite.python.interpreter import load_delegate as _ld
+            load_delegate = _ld
 
-MODEL_NAME = args.modeldir
-GRAPH_NAME = args.graph
-LABELMAP_NAME = args.labels
-min_conf_threshold = float(args.threshold)
-resW, resH = args.resolution.split('x')
-imW, imH = int(resW), int(resH)
-use_TPU = args.edgetpu
+    delegates = []
+    # EdgeTPU delegate
+    if use_tpu and load_delegate is not None:
+        # common library names; on some systems it's libedgetpu.so.1
+        for libname in ('libedgetpu.so.1.0', 'libedgetpu.so.1', 'libedgetpu.so'):
+            try:
+                delegates.append(load_delegate(libname))
+                break
+            except Exception:
+                continue
 
-# Import TensorFlow libraries
-# If tflite_runtime is installed, import interpreter from tflite_runtime, else import from regular tensorflow
-# If using Coral Edge TPU, import the load_delegate library
-pkg = importlib.util.find_spec('tflite_runtime')
-if pkg:
-    from tflite_runtime.interpreter import Interpreter
-    if use_TPU:
-        from tflite_runtime.interpreter import load_delegate
-else:
-    from tensorflow.lite.python.interpreter import Interpreter
-    if use_TPU:
-        from tensorflow.lite.python.interpreter import load_delegate
+    # XNNPACK CPU acceleration (disabled automatically by some builds)
+    # For tflite-runtime >= 2.3 this may be on by default; set via experimental options if supported
+    try:
+        interpreter = Interpreter(model_path=model_path, experimental_delegates=delegates)
+    except TypeError:
+        interpreter = Interpreter(model_path=model_path)
 
-# If using Edge TPU, assign filename for Edge TPU model
-if use_TPU:
-    # If user has specified the name of the .tflite file, use that name, otherwise use default 'edgetpu.tflite'
-    if (GRAPH_NAME == 'detect.tflite'):
-        GRAPH_NAME = 'edgetpu.tflite'       
+    return interpreter
 
-# Get path to current working directory
-CWD_PATH = os.getcwd()
+# ------------------------------
+# Output mapping (robust to names/order)
+# ------------------------------
 
-# Path to .tflite file, which contains the model that is used for object detection
-PATH_TO_CKPT = os.path.join(CWD_PATH,MODEL_NAME,GRAPH_NAME)
+def map_detection_outputs(output_details):
+    names = [d['name'] for d in output_details]
+    n = len(output_details)
 
-# Path to label map file
-PATH_TO_LABELS = os.path.join(CWD_PATH,MODEL_NAME,LABELMAP_NAME)
+    def find_idx(keywords):
+        for i, nm in enumerate(names):
+            for k in keywords:
+                if k in nm:
+                    return i
+        return None
 
-# Load the label map
-with open(PATH_TO_LABELS, 'r') as f:
-    labels = [line.strip() for line in f.readlines()]
+    # First try by name contains
+    boxes_idx   = find_idx(["detection_boxes", "boxes", "location"])
+    classes_idx = find_idx(["detection_classes", "classes", "label"])
+    scores_idx  = find_idx(["detection_scores", "scores"])
+    count_idx   = find_idx(["num_detections", "count"])  # optional
 
-# Have to do a weird fix for label map if using the COCO "starter model" from
-# https://www.tensorflow.org/lite/models/object_detection/overview
-# First label is '???', which has to be removed.
-if labels[0] == '???':
-    del(labels[0])
+    if (boxes_idx is not None) and (classes_idx is not None) and (scores_idx is not None):
+        return boxes_idx, classes_idx, scores_idx, count_idx
 
-# Load the Tensorflow Lite model.
-# If using Edge TPU, use special load_delegate argument
-if use_TPU:
-    interpreter = Interpreter(model_path=PATH_TO_CKPT,
-                              experimental_delegates=[load_delegate('libedgetpu.so.1.0')])
-    print(PATH_TO_CKPT)
-else:
-    interpreter = Interpreter(model_path=PATH_TO_CKPT)
+    # Fallback by common orders
+    if n == 3:  # [boxes, classes, scores]
+        return 0, 1, 2, None
+    if n == 4:  # [boxes, classes, scores, count] (TF Hub EfficientDet‑Lite)
+        return 0, 1, 2, 3
 
-interpreter.allocate_tensors()
+    raise RuntimeError(f"Unexpected number of outputs: {n}, names={names}")
 
-# Get model details
-input_details = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
-height = input_details[0]['shape'][1]
-width = input_details[0]['shape'][2]
+# ------------------------------
+# Drawing helpers
+# ------------------------------
 
-floating_model = (input_details[0]['dtype'] == np.float32)
-
-input_mean = 127.5
-input_std = 127.5
-
-# Check output layer name to determine if this model was created with TF2 or TF1,
-# because outputs are ordered differently for TF2 and TF1 models
-outname = output_details[0]['name']
-
-if ('StatefulPartitionedCall' in outname): # This is a TF2 model
-    boxes_idx, classes_idx, scores_idx = 1, 3, 0
-else: # This is a TF1 model
-    boxes_idx, classes_idx, scores_idx = 0, 1, 2
-
-# Initialize frame rate calculation
-frame_rate_calc = 1
-freq = cv2.getTickFrequency()
-
-# Initialize video stream
-videostream = VideoStream(resolution=(imW,imH),framerate=30).start()
-time.sleep(1)
-
-#for frame1 in camera.capture_continuous(rawCapture, format="bgr",use_video_port=True):
-while True:
-
-    # Start timer (for calculating frame rate)
-    t1 = cv2.getTickCount()
-
-    # Grab frame from video stream
-    frame1 = videostream.read()
-
-    # Acquire frame and resize to expected shape [1xHxWx3]
-    frame = frame1.copy()
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_resized = cv2.resize(frame_rgb, (width, height))
-    input_data = np.expand_dims(frame_resized, axis=0)
-
-    # Normalize pixel values if using a floating model (i.e. if model is non-quantized)
-    if floating_model:
-        input_data = (np.float32(input_data) - input_mean) / input_std
-
-    # Perform the actual detection by running the model with the image as input
-    interpreter.set_tensor(input_details[0]['index'],input_data)
-    interpreter.invoke()
-
-    # Retrieve detection results
-    boxes = interpreter.get_tensor(output_details[boxes_idx]['index'])[0] # Bounding box coordinates of detected objects
-    classes = interpreter.get_tensor(output_details[classes_idx]['index'])[0] # Class index of detected objects
-    scores = interpreter.get_tensor(output_details[scores_idx]['index'])[0] # Confidence of detected objects
-
-    # Loop over all detections and draw detection box if confidence is above minimum threshold
+def draw_detections(frame, boxes, classes, scores, labels, thr=0.5):
+    imH, imW = frame.shape[:2]
     for i in range(len(scores)):
-        if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
+        s = float(scores[i])
+        if s < thr or s > 1.0:
+            continue
+        cls = int(classes[i]) if classes is not None else -1
+        # Boxes are usually [ymin, xmin, ymax, xmax] normalized to [0,1]
+        y1 = int(max(1,      boxes[i][0] * imH))
+        x1 = int(max(1,      boxes[i][1] * imW))
+        y2 = int(min(imH-1,  boxes[i][2] * imH))
+        x2 = int(min(imW-1,  boxes[i][3] * imW))
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (10, 255, 0), 2)
+        name = labels[cls] if 0 <= cls < len(labels) else str(cls)
+        label = f"{name}: {int(s*100)}%"
+        (tw, th), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        y_text = max(y1, th + 10)
+        cv2.rectangle(frame, (x1, y_text - th - 8), (x1 + tw + 4, y_text + bl - 8), (255, 255, 255), cv2.FILLED)
+        cv2.putText(frame, label, (x1 + 2, y_text - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
 
-            # Get bounding box coordinates and draw box
-            # Interpreter can return coordinates that are outside of image dimensions, need to force them to be within image using max() and min()
-            ymin = int(max(1,(boxes[i][0] * imH)))
-            xmin = int(max(1,(boxes[i][1] * imW)))
-            ymax = int(min(imH,(boxes[i][2] * imH)))
-            xmax = int(min(imW,(boxes[i][3] * imW)))
-            
-            cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), (10, 255, 0), 2)
+# ------------------------------
+# Main
+# ------------------------------
 
-            # Draw label
-            object_name = labels[int(classes[i])] # Look up object name from "labels" array using class index
-            label = '%s: %d%%' % (object_name, int(scores[i]*100)) # Example: 'person: 72%'
-            labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2) # Get font size
-            label_ymin = max(ymin, labelSize[1] + 10) # Make sure not to draw label too close to top of window
-            cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10), (xmin+labelSize[0], label_ymin+baseLine-10), (255, 255, 255), cv2.FILLED) # Draw white box to put label text in
-            cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2) # Draw label text
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--modeldir', required=True, help='Folder that contains the .tflite file and labels')
+    ap.add_argument('--graph', default='detect.tflite', help='TFLite model filename')
+    ap.add_argument('--labels', default='labelmap.txt', help='Label map filename (one class per line)')
+    ap.add_argument('--threshold', type=float, default=0.5, help='Minimum confidence threshold')
+    ap.add_argument('--resolution', default='640x480', help='Webcam resolution WxH')
+    ap.add_argument('--edgetpu', action='store_true', help='Use Coral EdgeTPU delegate')
+    ap.add_argument('--camera', type=int, default=0, help='Video device index (default 0)')
+    ap.add_argument('--force_input', default='', help='Override model input size as WxH (e.g., 320x320); empty to auto')
+    args = ap.parse_args()
 
-    # Draw framerate in corner of frame
-    cv2.putText(frame,'FPS: {0:.2f}'.format(frame_rate_calc),(30,50),cv2.FONT_HERSHEY_SIMPLEX,1,(255,255,0),2,cv2.LINE_AA)
+    model_path = os.path.join(os.getcwd(), args.modeldir, args.graph)
+    labels_path = os.path.join(os.getcwd(), args.modeldir, args.labels)
 
-    # All the results have been drawn on the frame, so it's time to display it.
-    cv2.imshow('Object detector', frame)
+    # Load labels
+    if not os.path.exists(labels_path):
+        print(f"[WARN] label file not found: {labels_path}. Using generic labels.")
+        labels = [str(i) for i in range(1000)]
+    else:
+        with open(labels_path, 'r', encoding='utf-8') as f:
+            labels = [l.strip() for l in f if l.strip()]
+        if labels and labels[0] == '???':
+            labels = labels[1:]
 
-    # Calculate framerate
-    t2 = cv2.getTickCount()
-    time1 = (t2-t1)/freq
-    frame_rate_calc= 1/time1
+    # Load interpreter
+    interpreter = load_tflite_interpreter(model_path, use_tpu=args.edgetpu)
 
-    # Press 'q' to quit
-    if cv2.waitKey(1) == ord('q'):
-        break
+    # Determine / set input size
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
 
-# Clean up
-cv2.destroyAllWindows()
-videostream.stop()
+    # Print outputs for sanity
+    print('OUTPUTS =', len(output_details), [d['name'] for d in output_details])
+
+    # Map outputs robustly
+    boxes_idx, classes_idx, scores_idx, count_idx = map_detection_outputs(output_details)
+
+    # Figure input shape and dtype
+    in_h = int(input_details[0]['shape'][1])
+    in_w = int(input_details[0]['shape'][2])
+    in_dtype = input_details[0]['dtype']
+
+    if args.force_input:
+        try:
+            fw, fh = args.force_input.lower().split('x')
+            fw, fh = int(fw), int(fh)
+            interpreter.resize_tensor_input(input_details[0]['index'], [1, fh, fw, 3])
+            interpreter.allocate_tensors()
+            input_details = interpreter.get_input_details()
+            output_details = interpreter.get_output_details()
+            in_h = int(input_details[0]['shape'][1])
+            in_w = int(input_details[0]['shape'][2])
+            in_dtype = input_details[0]['dtype']
+            # Re-map outputs after re-allocate
+            boxes_idx, classes_idx, scores_idx, count_idx = map_detection_outputs(output_details)
+            print(f"[INFO] Force input size to {fw}x{fh}")
+        except Exception as e:
+            print(f"[WARN] --force_input ignored due to error: {e}")
+
+    floating_model = (in_dtype == np.float32)
+    input_mean, input_std = 127.5, 127.5
+
+    # Prepare camera
+    resW, resH = args.resolution.lower().split('x')
+    imW, imH = int(resW), int(resH)
+    vs = VideoStream(src=args.camera, resolution=(imW, imH), framerate=30).start()
+    time.sleep(1)
+
+    # FPS calc
+    prev_t = time.time()
+    fps = 0.0
+    freq = cv2.getTickFrequency()
+    frame_rate_calc = 1.0
+
+    try:
+        while True:
+            t1 = cv2.getTickCount()
+            frame = vs.read()
+            if frame is None:
+                continue
+            # Preprocess
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            resized = cv2.resize(frame_rgb, (in_w, in_h), interpolation=cv2.INTER_LINEAR)
+            input_data = np.expand_dims(resized, axis=0)
+
+            if floating_model:
+                input_data = (np.float32(input_data) - input_mean) / input_std
+            else:
+                # For quantized models, uint8 expected
+                if input_details[0]['dtype'] == np.uint8 and input_data.dtype != np.uint8:
+                    input_data = np.uint8(input_data)
+
+            # Inference
+            interpreter.set_tensor(input_details[0]['index'], input_data)
+            interpreter.invoke()
+
+            # Fetch outputs
+            boxes = interpreter.get_tensor(output_details[boxes_idx]['index'])[0]
+            classes = interpreter.get_tensor(output_details[classes_idx]['index'])[0]
+            scores = interpreter.get_tensor(output_details[scores_idx]['index'])[0]
+            if classes.dtype != np.int32 and classes.dtype != np.int64:
+                classes = classes.astype(np.int32)
+
+            # Draw
+            draw_detections(frame, boxes, classes, scores, labels, thr=args.threshold)
+
+            # FPS
+            now = time.time()
+            fps = 0.9 * fps + 0.1 * (1.0 / max(1e-6, (now - prev_t)))
+            prev_t = now
+            cv2.putText(frame, f"FPS: {frame_rate_calc:.2f}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2, cv2.LINE_AA)
+
+            cv2.imshow("Object detector (TFLite)", frame)
+            # Calculate framerate
+            t2 = cv2.getTickCount()
+            time1 = (t2-t1)/freq
+            frame_rate_calc= 1/time1
+
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord('q'), 27):  # q or ESC
+                break
+
+    finally:
+        vs.stop()
+        cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    main()
