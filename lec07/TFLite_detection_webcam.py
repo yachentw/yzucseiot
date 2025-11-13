@@ -2,24 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Webcam Object Detection (TFLite)
-- Ready for EfficientDet‑Lite0/1/2 (TF Hub) and SSD‑MobileNet (V1/V2/V3) TFLite models
+- Ready for EfficientDet-Lite0/1/2 (TF Hub) and SSD-MobileNet (V1/V2/V3) TFLite models
 - Works on Raspberry Pi (Pi 4/5) with tflite-runtime or full TensorFlow
 - Robust output mapping (auto-detects boxes/classes/scores/count regardless of name/order)
-- Keeps your original threaded VideoStream design for better FPS
-
-Usage (examples):
-  python3 TFLite_detection_webcam_efficientdet.py \
-    --modeldir TFLite_model \
-    --graph efficientdet_lite0.tflite \
-    --labels labelmap.txt \
-    --threshold 0.4 \
-    --resolution 1280x720
-
-Notes:
-- If you use EfficientDet‑Lite from TF Hub, input size is typically 320x320 (Lite0), 384x384 (Lite1), 448x448 (Lite2).
-- This script automatically reads model input tensor size; you can override via --force_input if needed.
-- For quantized models (int8/uint8), normalization is not applied; for float models, mean/std normalization is used.
-- For EdgeTPU models, add --edgetpu and make sure the corresponding edgetpu .tflite is used.
+- Threaded VideoStream for better FPS
 """
 import os
 import sys
@@ -67,7 +53,7 @@ class VideoStream:
 # TFLite loader (tflite-runtime or TF)
 # ------------------------------
 
-def load_tflite_interpreter(model_path, use_tpu=False, use_xnnpack=True):
+def load_tflite_interpreter(model_path, use_tpu=False):
     """Load TFLite interpreter from tflite_runtime if available; otherwise from tensorflow."""
     pkg = importlib.util.find_spec('tflite_runtime')
     if pkg:
@@ -90,12 +76,14 @@ def load_tflite_interpreter(model_path, use_tpu=False, use_xnnpack=True):
         for libname in ('libedgetpu.so.1.0', 'libedgetpu.so.1', 'libedgetpu.so'):
             try:
                 delegates.append(load_delegate(libname))
+                print(f"[INFO] Loaded EdgeTPU delegate: {libname}")
                 break
             except Exception:
                 continue
+        if not delegates:
+            print("[WARN] EdgeTPU delegate requested but not found")
 
-    # XNNPACK CPU acceleration (disabled automatically by some builds)
-    # For tflite-runtime >= 2.3 this may be on by default; set via experimental options if supported
+    # Create interpreter with delegates if available
     try:
         interpreter = Interpreter(model_path=model_path, experimental_delegates=delegates)
     except TypeError:
@@ -108,6 +96,7 @@ def load_tflite_interpreter(model_path, use_tpu=False, use_xnnpack=True):
 # ------------------------------
 
 def map_detection_outputs(output_details):
+    """Map output tensors to boxes, classes, scores, and count indices."""
     names = [d['name'] for d in output_details]
     n = len(output_details)
 
@@ -130,7 +119,7 @@ def map_detection_outputs(output_details):
     # Fallback by common orders
     if n == 3:  # [boxes, classes, scores]
         return 0, 1, 2, None
-    if n == 4:  # [boxes, classes, scores, count] (TF Hub EfficientDet‑Lite)
+    if n == 4:  # [boxes, classes, scores, count] (TF Hub EfficientDet-Lite)
         return 0, 1, 2, 3
 
     raise RuntimeError(f"Unexpected number of outputs: {n}, names={names}")
@@ -140,6 +129,7 @@ def map_detection_outputs(output_details):
 # ------------------------------
 
 def draw_detections(frame, boxes, classes, scores, labels, thr=0.5):
+    """Draw bounding boxes and labels on frame."""
     imH, imW = frame.shape[:2]
     for i in range(len(scores)):
         s = float(scores[i])
@@ -151,13 +141,30 @@ def draw_detections(frame, boxes, classes, scores, labels, thr=0.5):
         x1 = int(max(1,      boxes[i][1] * imW))
         y2 = int(min(imH-1,  boxes[i][2] * imH))
         x2 = int(min(imW-1,  boxes[i][3] * imW))
+        
         cv2.rectangle(frame, (x1, y1), (x2, y2), (10, 255, 0), 2)
+        
         name = labels[cls] if 0 <= cls < len(labels) else str(cls)
         label = f"{name}: {int(s*100)}%"
         (tw, th), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
         y_text = max(y1, th + 10)
         cv2.rectangle(frame, (x1, y_text - th - 8), (x1 + tw + 4, y_text + bl - 8), (255, 255, 255), cv2.FILLED)
         cv2.putText(frame, label, (x1 + 2, y_text - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+def load_labels(labels_path):
+    """Load label file, handling common formats."""
+    if not os.path.exists(labels_path):
+        print(f"[WARN] label file not found: {labels_path}. Using generic labels.")
+        return [str(i) for i in range(1000)]
+    
+    with open(labels_path, 'r', encoding='utf-8') as f:
+        labels = [l.strip() for l in f if l.strip()]
+    
+    # Remove '???' placeholder if present (common in some label files)
+    if labels and labels[0] == '???':
+        labels = labels[1:]
+    
+    return labels
 
 # ------------------------------
 # Main
@@ -175,76 +182,84 @@ def main():
     ap.add_argument('--force_input', default='', help='Override model input size as WxH (e.g., 320x320); empty to auto')
     args = ap.parse_args()
 
+    # Setup paths
     model_path = os.path.join(os.getcwd(), args.modeldir, args.graph)
     labels_path = os.path.join(os.getcwd(), args.modeldir, args.labels)
 
+    # Validate model exists
+    if not os.path.exists(model_path):
+        print(f"[ERROR] Model file not found: {model_path}")
+        sys.exit(1)
+
     # Load labels
-    if not os.path.exists(labels_path):
-        print(f"[WARN] label file not found: {labels_path}. Using generic labels.")
-        labels = [str(i) for i in range(1000)]
-    else:
-        with open(labels_path, 'r', encoding='utf-8') as f:
-            labels = [l.strip() for l in f if l.strip()]
-        if labels and labels[0] == '???':
-            labels = labels[1:]
+    labels = load_labels(labels_path)
 
     # Load interpreter
+    print(f"[INFO] Loading model: {model_path}")
     interpreter = load_tflite_interpreter(model_path, use_tpu=args.edgetpu)
 
-    # Determine / set input size
+    # Initial allocation
     interpreter.allocate_tensors()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Print outputs for sanity
-    print('OUTPUTS =', len(output_details), [d['name'] for d in output_details])
-
-    # Map outputs robustly
-    boxes_idx, classes_idx, scores_idx, count_idx = map_detection_outputs(output_details)
-
-    # Figure input shape and dtype
+    # Get input shape and dtype
     in_h = int(input_details[0]['shape'][1])
     in_w = int(input_details[0]['shape'][2])
     in_dtype = input_details[0]['dtype']
 
+    print(f'[INFO] Model input: {in_w}x{in_h}, dtype: {in_dtype}')
+    print(f'[INFO] Model outputs: {len(output_details)} - {[d["name"] for d in output_details]}')
+
+    # Handle force_input if specified
     if args.force_input:
         try:
             fw, fh = args.force_input.lower().split('x')
             fw, fh = int(fw), int(fh)
+            print(f"[INFO] Resizing model input to {fw}x{fh}")
             interpreter.resize_tensor_input(input_details[0]['index'], [1, fh, fw, 3])
             interpreter.allocate_tensors()
+            
+            # Refresh details after resize
             input_details = interpreter.get_input_details()
             output_details = interpreter.get_output_details()
             in_h = int(input_details[0]['shape'][1])
             in_w = int(input_details[0]['shape'][2])
             in_dtype = input_details[0]['dtype']
-            # Re-map outputs after re-allocate
-            boxes_idx, classes_idx, scores_idx, count_idx = map_detection_outputs(output_details)
-            print(f"[INFO] Force input size to {fw}x{fh}")
+            print(f"[INFO] Model input resized to: {in_w}x{in_h}")
         except Exception as e:
             print(f"[WARN] --force_input ignored due to error: {e}")
 
+    # Map outputs once after all potential resizing
+    boxes_idx, classes_idx, scores_idx, count_idx = map_detection_outputs(output_details)
+    print(f"[INFO] Output mapping - boxes:{boxes_idx}, classes:{classes_idx}, scores:{scores_idx}, count:{count_idx}")
+
+    # Determine normalization parameters
     floating_model = (in_dtype == np.float32)
     input_mean, input_std = 127.5, 127.5
 
     # Prepare camera
     resW, resH = args.resolution.lower().split('x')
     imW, imH = int(resW), int(resH)
+    print(f"[INFO] Starting camera {args.camera} at {imW}x{imH}")
+    
     vs = VideoStream(src=args.camera, resolution=(imW, imH), framerate=30).start()
-    time.sleep(1)
+    time.sleep(1)  # Allow camera to warm up
 
-    # FPS calc
-    prev_t = time.time()
-    fps = 0.0
-    freq = cv2.getTickFrequency()
-    frame_rate_calc = 1.0
+    # FPS calculation
+    frame_times = []
+    max_frame_history = 30
+
+    print("[INFO] Press 'q' or ESC to quit")
 
     try:
         while True:
-            t1 = cv2.getTickCount()
+            t_start = time.time()
+            
             frame = vs.read()
             if frame is None:
                 continue
+
             # Preprocess
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             resized = cv2.resize(frame_rgb, (in_w, in_h), interpolation=cv2.INTER_LINEAR)
@@ -253,8 +268,8 @@ def main():
             if floating_model:
                 input_data = (np.float32(input_data) - input_mean) / input_std
             else:
-                # For quantized models, uint8 expected
-                if input_details[0]['dtype'] == np.uint8 and input_data.dtype != np.uint8:
+                # For quantized models, ensure uint8
+                if in_dtype == np.uint8 and input_data.dtype != np.uint8:
                     input_data = np.uint8(input_data)
 
             # Inference
@@ -265,29 +280,40 @@ def main():
             boxes = interpreter.get_tensor(output_details[boxes_idx]['index'])[0]
             classes = interpreter.get_tensor(output_details[classes_idx]['index'])[0]
             scores = interpreter.get_tensor(output_details[scores_idx]['index'])[0]
-            if classes.dtype != np.int32 and classes.dtype != np.int64:
+            
+            # Ensure classes are integers
+            if classes.dtype not in (np.int32, np.int64):
                 classes = classes.astype(np.int32)
 
-            # Draw
+            # Draw detections
             draw_detections(frame, boxes, classes, scores, labels, thr=args.threshold)
 
-            # FPS
-            now = time.time()
-            fps = 0.9 * fps + 0.1 * (1.0 / max(1e-6, (now - prev_t)))
-            prev_t = now
-            cv2.putText(frame, f"FPS: {frame_rate_calc:.2f}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2, cv2.LINE_AA)
+            # Calculate FPS using moving average
+            t_end = time.time()
+            frame_time = t_end - t_start
+            frame_times.append(frame_time)
+            if len(frame_times) > max_frame_history:
+                frame_times.pop(0)
+            
+            avg_fps = 1.0 / (sum(frame_times) / len(frame_times))
+            
+            cv2.putText(frame, f"FPS: {avg_fps:.1f}", (30, 50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2, cv2.LINE_AA)
 
             cv2.imshow("Object detector (TFLite)", frame)
-            # Calculate framerate
-            t2 = cv2.getTickCount()
-            time1 = (t2-t1)/freq
-            frame_rate_calc= 1/time1
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord('q'), 27):  # q or ESC
                 break
 
+    except KeyboardInterrupt:
+        print("\n[INFO] Interrupted by user")
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        import traceback
+        traceback.print_exc()
     finally:
+        print("[INFO] Cleaning up...")
         vs.stop()
         cv2.destroyAllWindows()
 
