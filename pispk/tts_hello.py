@@ -20,7 +20,7 @@ with tempfile.NamedTemporaryFile(suffix='.mp3', delete=True) as temp_file:
     # Play the MP3 file
     try:
         subprocess.run(
-            ['vlc', '--play-and-exit', temp_path],
+            ['mpv', '--no-video', temp_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
