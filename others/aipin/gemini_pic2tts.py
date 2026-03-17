@@ -1,5 +1,3 @@
-# genai.configure(api_key="AIzaSyAhQNfZeNH0jPbBctginKmWCQDsipZNXbQ")
-
 import google.generativeai as genai
 from gtts import gTTS
 import PIL.Image
